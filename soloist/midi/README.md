@@ -25,30 +25,41 @@ LD_BIND_NOW=1 LD_PRELOAD=/data/opt/solo/lib/libpulse.so.0 \
 
 ## Исправление
 
-Штатный apulse 0.1.13 из Ubuntu 24.04 (armhf) работает с glibc 2.38 из пакета и системной
-`/usr/lib/libasound.so.2`. В нём меняется одна инструкция: `pa_context_set_sink_input_volume`
-только подтверждает запрос и не меняет уровень потока. Громкостью уже управляет Spotiya через
-ALSA `Master`; без этого изменения громкость применяется дважды (50% в приложении ≈ 25% на выходе).
+`apulse-midi.patch` — правка к штатному apulse 0.1.13
+([i-rinat/apulse](https://github.com/i-rinat/apulse), коммит `0f9f8487`):
+
+- с `SPOTIYA_SOLOIST_HARDWARE_VOLUME=1` (его уже выставляет `/data/opt/solo/run.sh`) громкость потока
+  не меняется: уровнем управляет Spotiya через ALSA `Master`, иначе громкость применяется дважды
+  (50% в приложении ≈ 25% на выходе);
+- пока существует свежий файл `/run/spotiya-duck`, поток приглушается до 20% (спад 80 мс, возврат 300 мс).
+  Spotiya создаёт этот файл, пока Алиса слушает, думает или говорит. Soloist выводит звук отдельным
+  процессом, поэтому встроенное приглушение Spotiya до его сэмплов не дотягивается.
+
+Причина падений — привязка символов ALSA. У `snd_pcm_hw_params_set_rate_near`, `…_period_size_near`,
+`…_buffer_size_near` в `libasound` две версии: устаревшая `ALSA_0.9` и текущая `ALSA_0.9.0rc4` с другой
+сигнатурой. Ссылка без версии на станции привязывается к устаревшей. Поэтому библиотека собирается
+против настоящей версионированной `libasound` из Debian bookworm, а скрипт проверяет результат.
 
 Спектр на дисплее при этом недоступен: он есть только в apulse из Spotiya.
 
-Установка с компьютера (нужны `curl`, `tar` с поддержкой zstd, `ssh`; SSH на станции — dropbear, порт 2222):
+Сборка (Docker, из корня репозитория) и установка на станцию (SSH — dropbear, порт 2222):
 
 ```sh
+docker run --rm -v "$PWD":/src rust:1-bookworm sh /src/soloist/midi/build-libpulse.sh
 sh soloist/midi/install.sh 192.168.1.50
 ```
 
-Скрипт:
+`install.sh`:
 
-1. `make-libpulse.sh` скачивает `apulse_0.1.13-2build2_armhf.deb` с ports.ubuntu.com, сверяет SHA-256
-   пакета, извлечённой библиотеки и результата после правки двух байт;
-2. кладёт результат в `/data/opt/libpulse.so.0.novol`, а `spotiya-fix.sh` — в `/data/opt/`;
-3. добавляет вызов `spotiya-fix.sh` в `start` у `/etc/init.d/S99spotify-connect`;
-4. перезапускает Spotify Connect.
+1. кладёт `libpulse.so.0` в `/data/opt/libpulse.so.0.novol`, а `spotiya-fix.sh` — в `/data/opt/`;
+2. добавляет вызов `spotiya-fix.sh` в `start` у `/etc/init.d/S99spotify-connect`;
+3. перезапускает Spotify Connect.
 
 `spotiya-fix.sh` при каждом запуске сравнивает `/data/opt/solo/lib/libpulse.so.0` с сохранённой копией
 и возвращает её, если файл изменился. Поэтому после `spotiya addon install soloist`
 (сборки Soloist живут 90 дней, потом процесс выходит с кодом 10) достаточно `spotiya restart`.
+
+Приглушение при разговоре с Алисой работает только с бинарником Spotiya из этого форка (см. ниже).
 
 Откат: удалить строку со `spotiya-fix.sh` из `/etc/init.d/S99spotify-connect` и вернуть
 `/data/opt/solo/lib/libpulse.so.0.orig`.

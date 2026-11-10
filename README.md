@@ -59,11 +59,12 @@ spotiya restart
 
 ## Отличия этого форка
 
-Форк [klockky/spotiya](https://github.com/klockky/spotiya) 0.10.1 с двумя изменениями:
+Форк [klockky/spotiya](https://github.com/klockky/spotiya) 0.10.1 с изменениями:
 
 - **Soloist на Станции Миди.** Пакет совместимости из релиза на Миди не даёт звука (apulse не
   загружается и падает в ALSA). Разбор и скрипт исправления — в [soloist/midi/README.md](soloist/midi/README.md).
 - **Голосовой поиск с Soloist** — раздел ниже.
+- **Приглушение музыки Soloist**, пока Алиса слушает и отвечает (вместе с apulse из `soloist/midi`).
 
 Готовых релизов у форка нет: бинарник собирается из исходников
 ([сборка под Миди](soloist/midi/README.md#сборка-spotiya-под-миди)).

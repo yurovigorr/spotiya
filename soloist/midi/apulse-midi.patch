@@ -1,0 +1,103 @@
+diff --git a/src/apulse-context.c b/src/apulse-context.c
+index 3e46200..bb547b1 100644
+--- a/src/apulse-context.c
++++ b/src/apulse-context.c
+@@ -607,13 +607,18 @@ pa_context_set_sink_input_volume_impl(pa_operation *op)
+         return;
+     }
+ 
+-    memset(s->volume, 0, sizeof(s->volume));
++    // Spotiya drives the ALSA Master control itself; scaling the stream as well
++    // would apply the volume twice.
++    const char *hw_volume = getenv("SPOTIYA_SOLOIST_HARDWARE_VOLUME");
++    if (!(hw_volume && hw_volume[0] == '1')) {
++        memset(s->volume, 0, sizeof(s->volume));
+ 
+-    const uint32_t channels =
+-        MIN(op->pa_cvolume_arg_1.channels, PA_CHANNELS_MAX);
++        const uint32_t channels =
++            MIN(op->pa_cvolume_arg_1.channels, PA_CHANNELS_MAX);
+ 
+-    for (uint32_t k = 0; k < channels; k++)
+-        s->volume[k] = op->pa_cvolume_arg_1.values[k];
++        for (uint32_t k = 0; k < channels; k++)
++            s->volume[k] = op->pa_cvolume_arg_1.values[k];
++    }
+ 
+     if (op->context_success_cb)
+         op->context_success_cb(op->c, 1, op->cb_userdata);
+diff --git a/src/apulse-stream.c b/src/apulse-stream.c
+index e3ecfb5..2d2e0af 100644
+--- a/src/apulse-stream.c
++++ b/src/apulse-stream.c
+@@ -25,6 +25,62 @@
+ #include "apulse.h"
+ #include "trace.h"
+ #include "util.h"
++#include <sys/stat.h>
++#include <time.h>
++
++// Spotiya creates this file while Alice listens, thinks or speaks and removes it
++// afterwards. A file older than the hold time is ignored, so a crashed receiver
++// cannot leave the music ducked forever.
++#define SPOTIYA_DUCK_FILE "/run/spotiya-duck"
++#define SPOTIYA_DUCK_HOLD 65
++#define SPOTIYA_DUCK_LEVEL 0.2f
++#define SPOTIYA_DUCK_ATTACK 0.08f
++#define SPOTIYA_DUCK_RELEASE 0.3f
++
++static void
++spotiya_duck(void *buf, size_t sz, const pa_sample_spec *ss)
++{
++    static float gain = 1.0f;
++    struct stat st;
++    int busy = stat(SPOTIYA_DUCK_FILE, &st) == 0 &&
++               time(NULL) - st.st_mtime < SPOTIYA_DUCK_HOLD;
++    const float target = busy ? SPOTIYA_DUCK_LEVEL : 1.0f;
++
++    if (gain == 1.0f && target == 1.0f)
++        return;
++    if (ss->channels == 0 || ss->rate == 0)
++        return;
++    if (ss->format != PA_SAMPLE_FLOAT32NE && ss->format != PA_SAMPLE_S16NE)
++        return;
++
++    const float seconds = target < gain ? SPOTIYA_DUCK_ATTACK : SPOTIYA_DUCK_RELEASE;
++    const float step = (1.0f - SPOTIYA_DUCK_LEVEL) / (seconds * ss->rate);
++    const size_t sample_size = ss->format == PA_SAMPLE_FLOAT32NE ? 4 : 2;
++    const size_t frame_size = sample_size * ss->channels;
++    char *p = buf;
++    char *last = p + sz - sz % frame_size;
++
++    while (p < last) {
++        if (target < gain)
++            gain = MAX(gain - step, target);
++        else
++            gain = MIN(gain + step, target);
++
++        for (uint32_t k = 0; k < ss->channels; k++, p += sample_size) {
++            if (ss->format == PA_SAMPLE_FLOAT32NE) {
++                float sample;
++                memcpy(&sample, p, sizeof(sample));
++                sample *= gain;
++                memcpy(p, &sample, sizeof(sample));
++            } else {
++                int16_t sample;
++                memcpy(&sample, p, sizeof(sample));
++                sample = (int16_t)(sample * gain);
++                memcpy(p, &sample, sizeof(sample));
++            }
++        }
++    }
++}
+ 
+ #define MAKE_SND_LIB_VERSION(a, b, c) (((a) << 16) | ((b) << 8) | (c))
+ 
+@@ -188,6 +244,7 @@ data_available_for_stream(pa_mainloop_api *a, pa_io_event *ioe, int fd,
+             bytecnt = ringbuffer_read(s->rb, buf, bytecnt);
+ 
+             pa_apply_volume_multiplier(buf, bytecnt, s->volume, &s->ss);
++            spotiya_duck(buf, bytecnt, &s->ss);
+ 
+             if (bytecnt == 0) {
+                 // application is not ready yet, play silence
