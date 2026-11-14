@@ -1288,7 +1288,18 @@ async fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             },
             Some(event)=voice_rx.recv()=>{
                 if event.received.elapsed()>VOICE_EXPIRY {continue;}
-                if event.from_voice && !voice_enabled {continue;}
+                if event.from_voice && !voice_enabled {
+                    // Voice search stays with the native assistant, but transport commands
+                    // follow the source that is audible: Spotify while it plays, and a
+                    // resume while it is the paused active source.
+                    let (active,paused)=(shared.active.load(Ordering::Acquire),shared.paused.load(Ordering::Relaxed));
+                    let ours=match event.intent {
+                        voice::Intent::Pause|voice::Intent::Next|voice::Intent::Previous|voice::Intent::Toggle=>active&&!paused,
+                        voice::Intent::Resume=>active&&paused,
+                        _=>false,
+                    };
+                    if !ours {continue;}
+                }
                 if is_soloist && let voice::Intent::Play(query)=&event.intent && !soloist::playable(query)
                     && webapi::credentials_path(&options.state_dir).exists() {
                     // Soloist has no text search: resolve the query through the Web API
